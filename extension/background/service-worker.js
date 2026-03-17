@@ -190,6 +190,12 @@ async function handleMessage(msg, sender) {
     case 'UPDATE_COMMENTS': {
       const channel  = msg.channel  ?? ''
       const metadata = msg.metadata ?? {}
+      // Clear phrase queue when channel changes to prevent stale phrases from leaking
+      const { currentChannel: prevChannel = '' } = await chrome.storage.local.get('currentChannel')
+      if (channel && channel !== prevChannel) {
+        await clearCache()
+        swLog('info', `channel changed: ${prevChannel} → ${channel}, phrase queue cleared`)
+      }
       await chrome.storage.local.set({ currentComments: msg.comments, currentChannel: channel, currentMetadata: metadata })
       if (channel && Array.isArray(msg.comments) && msg.comments.length > 0) {
         await appendToRollingCache(channel, msg.comments)
