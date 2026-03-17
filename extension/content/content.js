@@ -508,7 +508,7 @@ function boot() {
     } catch {}
   }
   pollBalance()
-  balancePollTimer = setInterval(pollBalance, 30_000)
+  balancePollTimer = setInterval(pollBalance, 300_000)
   tlLog('info', 'boot: observer started')
 }
 
