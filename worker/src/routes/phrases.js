@@ -28,8 +28,11 @@ export async function handlePhrasesBatch(request, env, userId, supabase) {
   )
   const commentTexts = commentObjects.map(c => c.text)
 
-  // ── Stage 1: Extract candidate phrase names (language auto-detected) ────
-  const phraseNames = await extractPhraseNames(commentTexts, nativeLang, env.ANTHROPIC_API_KEY)
+  // ── Stage 1: Extract candidate phrase names ──────────────────────────────
+  // streamLang from DOM/comment detection; nativeLang so LLM knows what NOT to explain
+  const phraseNames = await extractPhraseNames(
+    commentTexts, nativeLang, env.ANTHROPIC_API_KEY, metadata.streamLang ?? null
+  )
   if (!phraseNames || phraseNames.length === 0) {
     return jsonResponse({ ok: true, phrases: [] })
   }
@@ -202,20 +205,25 @@ async function persistDictEntries(termId, source, fetchedEntries, supabase) {
 // ══════════════════════════════════════════════════════════════════
 // Stage 1 — Phrase name extractor (returns string[])
 // ══════════════════════════════════════════════════════════════════
-async function extractPhraseNames(commentTexts, nativeLang, apiKey) {
-  const nativeName = LANG_NAMES[nativeLang] ?? nativeLang
+async function extractPhraseNames(commentTexts, nativeLang, apiKey, streamLang = null) {
+  const nativeName   = LANG_NAMES[nativeLang]   ?? nativeLang
+  const streamName   = LANG_NAMES[streamLang]   ?? streamLang
+  const langDirective = streamLang
+    ? `The stream language is ${streamName} (${streamLang}). Extract ONLY ${streamName} phrases from the comments.`
+    : `Detect the dominant language of the comments and extract phrases from that language only.`
 
-  const prompt = `From the Twitch chat comments below, extract up to 5 slang terms, idioms, or notable phrases worth learning.
+  const prompt = `You are extracting phrases from Twitch chat for a language learner whose native language is ${nativeName}.
+${langDirective}
+
 Output ONLY a JSON array of strings — no markdown, no explanation.
+If no suitable phrases are found in the comments, output an empty array: []
 
 Extraction rules:
-- Detect the dominant language of the chat automatically — pick phrases from that language
+- CRITICAL: Only extract phrases that ACTUALLY APPEAR verbatim (or near-verbatim) in the comments below. Do NOT invent or hallucinate phrases.
 - Single words or short multi-word expressions only (NOT full sentences)
-- Skip words 3 characters or shorter (ok, no, gg, wp, lol) unless culturally significant Twitch slang
+- Skip words 3 characters or shorter unless they are culturally significant Twitch/gaming slang
 - Skip pure numbers, URLs, and @mentions
-- Prefer internet slang, gaming terms, memes, and expressions that a ${nativeName} speaker learning through immersion would find educational or unfamiliar
-
-Example output: ["copium","no cap","he's cooked","brain rot"]
+- Prefer slang, internet expressions, gaming terms, and memes that would be educational for an immersion learner
 
 Twitch chat comments:
 ${commentTexts.join('\n')}`

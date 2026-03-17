@@ -469,7 +469,48 @@ const GAME_TITLE_SELECTORS = [
   '[class*="game-link"]',
 ]
 
-function getStreamMetadata() {
+// Twitch shows broadcast language as a tag or link near the stream info.
+// Multiple selector candidates to cover DOM changes across Twitch versions.
+const STREAM_LANG_SELECTORS = [
+  'a[href*="/directory/all/lang="]',          // language directory link
+  '[data-test-selector="language-tag"] a',    // language tag element
+  '[data-a-target="language-toggle"] span',   // language toggle button
+  '.language-select-rework__option--selected',// legacy language select
+]
+
+// Twitch locale → BCP47 lang code mapping (display name fallback)
+const TWITCH_LANG_NAMES = {
+  '日本語': 'ja', 'japanese': 'ja',
+  'english': 'en', '英語': 'en',
+  '한국어': 'ko', 'korean': 'ko',
+  '中文': 'zh', 'chinese': 'zh',
+  'español': 'es', 'spanish': 'es',
+  'français': 'fr', 'french': 'fr',
+  'deutsch': 'de', 'german': 'de',
+  'português': 'pt', 'portuguese': 'pt',
+  'русский': 'ru', 'russian': 'ru',
+}
+
+/**
+ * Detect the dominant language from comment text.
+ * Used as fallback when DOM-based detection fails.
+ */
+function detectLangFromComments(comments) {
+  const text = comments.map(c => typeof c === 'string' ? c : c.text).join('')
+  const kana   = (text.match(/[\u3040-\u30ff]/g) || []).length   // hiragana/katakana → ja only
+  const hangul = (text.match(/[\uAC00-\uD7AF]/g) || []).length   // Korean
+  const cjk    = (text.match(/[\u4e00-\u9fff]/g) || []).length   // CJK (shared ja/zh)
+  const latin  = (text.match(/[a-zA-Z]/g)        || []).length
+  const total  = kana + hangul + cjk + latin
+  if (total < 10) return null
+  if (kana > 0)                    return 'ja'   // kana is unique to Japanese
+  if (hangul / total > 0.2)        return 'ko'
+  if (cjk    / total > 0.3)        return 'zh'
+  if (latin  / total > 0.5)        return 'en'
+  return null
+}
+
+function getStreamMetadata(comments = []) {
   let streamTitle = null
   for (const sel of STREAM_TITLE_SELECTORS) {
     const el = document.querySelector(sel)
@@ -484,7 +525,26 @@ function getStreamMetadata() {
     if (text) { gameTitle = text.slice(0, 60); break }
   }
 
-  return { streamTitle, gameTitle }
+  // 1. Try DOM-based language detection
+  let streamLang = null
+  for (const sel of STREAM_LANG_SELECTORS) {
+    const el = document.querySelector(sel)
+    if (!el) continue
+    // Try href first (e.g. /directory/all/lang=ja)
+    const href = el.getAttribute('href') ?? ''
+    const m = href.match(/[?&]lang=([a-z]{2})/)
+    if (m) { streamLang = m[1]; break }
+    // Try text content (e.g. "日本語")
+    const name = el.textContent?.trim().toLowerCase()
+    if (name && TWITCH_LANG_NAMES[name]) { streamLang = TWITCH_LANG_NAMES[name]; break }
+  }
+
+  // 2. Fall back to comment text analysis
+  if (!streamLang && comments.length > 0) {
+    streamLang = detectLangFromComments(comments)
+  }
+
+  return { streamTitle, gameTitle, streamLang }
 }
 
 // ══════════════════════════════════════════════
@@ -582,7 +642,7 @@ function boot() {
     if (!isContextValid()) { stopObserver(); return }
     try {
       const channel = location.pathname.split('/')[1]?.toLowerCase().replace(/[^a-z0-9_]/g, '') ?? ''
-      const metadata = getStreamMetadata()
+      const metadata = getStreamMetadata(comments)
       tlLog('info', 'comments updated', { count: comments.length, channel, ...metadata })
       chrome.runtime.sendMessage({ type: 'UPDATE_COMMENTS', comments, channel, metadata })
     } catch {}
