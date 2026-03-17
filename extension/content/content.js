@@ -487,6 +487,8 @@ function getStreamMetadata() {
   return { streamTitle, gameTitle }
 }
 
+let balancePollTimer = null
+
 function boot() {
   initUI()
   startObserver(comments => {
@@ -498,17 +500,22 @@ function boot() {
       chrome.runtime.sendMessage({ type: 'UPDATE_COMMENTS', comments, channel, metadata })
     } catch {}
   })
-  try {
-    chrome.runtime.sendMessage({ type: 'GET_BALANCE' }, res => {
-      if (res?.balance != null) setBalance(res.balance)
-    })
-  } catch {}
+  const pollBalance = () => {
+    try {
+      chrome.runtime.sendMessage({ type: 'GET_BALANCE' }, res => {
+        if (res?.balance != null) setBalance(res.balance)
+      })
+    } catch {}
+  }
+  pollBalance()
+  balancePollTimer = setInterval(pollBalance, 30_000)
   tlLog('info', 'boot: observer started')
 }
 
 function teardown() {
   stopObserver()
   destroyUI()
+  if (balancePollTimer) { clearInterval(balancePollTimer); balancePollTimer = null }
 }
 
 function onNavigate() {
