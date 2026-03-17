@@ -1,11 +1,18 @@
 /**
  * POST /phrases/batch
- * Body: { comments: string[], nativeLang: string, targetLang: string }
+ * Body: { comments: string[], nativeLang: string, targetLang: string, metadata: {} }
  * Returns: { phrases: PhraseExplanation[] }
  *
  * Two-stage pipeline:
- *   Agent 1 — Extract phrase names from chat comments (Haiku, lightweight)
- *   Agent 2 — Fetch Urban Dictionary context + generate grounded explanation (Haiku × N, parallel)
+ *   Stage 1 — Extract phrase names from chat comments (Haiku, lightweight)
+ *   Stage 2 — Dict cache lookup → optional UD fetch → grounded explanation (Haiku × N, parallel)
+ *
+ * Dictionary cache rules (dict_terms + dict_entries in Supabase):
+ *   - hit=true,  age < 90 days  → use cached entries, skip API
+ *   - hit=true,  age ≥ 90 days  → mandatory re-fetch (data may be stale)
+ *   - hit=false, age < 1 day    → skip API (too soon to retry)
+ *   - hit=false, age ≥ 1 day    → re-fetch (might have new entries now)
+ *   - no record                 → fetch and store
  */
 export async function handlePhrasesBatch(request, env, userId, supabase) {
   const body = await request.json()
@@ -21,33 +28,42 @@ export async function handlePhrasesBatch(request, env, userId, supabase) {
   )
   const commentTexts = commentObjects.map(c => c.text)
 
-  // ── Stage 1: Extract candidate phrase names (strings only) ──────────────
+  // ── Stage 1: Extract candidate phrase names ──────────────────────────────
   const phraseNames = await extractPhraseNames(commentTexts, targetLang, env.ANTHROPIC_API_KEY)
   if (!phraseNames || phraseNames.length === 0) {
     return jsonResponse({ ok: true, phrases: [] })
   }
 
-  // Style examples: evenly-spaced sample of 7 comments representing the chat register
+  // Style examples: evenly-spaced sample of 7 comments representing chat register
   const step = Math.max(1, Math.floor(commentObjects.length / 7))
   const styleExamples = Array.from({ length: 7 }, (_, i) => commentObjects[i * step])
     .filter(Boolean)
     .map(c => c.text)
 
-  // ── Stage 2: Fetch UD context + explain (all phrases in parallel) ────────
+  // ── Stage 2: Dict lookup → optional UD fetch → explain (all in parallel) ─
   const results = await Promise.all(
     phraseNames.map(async phrase => {
-      // Reverse-lookup source comment entirely in Worker code (no LLM index used)
       const src = findSourceComment(phrase, commentObjects)
 
-      // Up to 3 other comments in the batch that also contain the phrase
       const relatedComments = commentObjects
         .filter(c => c !== src && c.text.toLowerCase().includes(phrase.toLowerCase()))
         .slice(0, 3)
         .map(c => c.text)
 
+      // Dictionary cache layer
+      const { shouldFetch, entries: cachedEntries, termId } =
+        await resolveDictEntries(phrase, 'urban_dictionary', supabase)
+
+      let udEntries = cachedEntries
+      if (shouldFetch) {
+        const fetched = await fetchUrbanDictionary(phrase)
+        if (termId) await persistDictEntries(termId, 'urban_dictionary', fetched, supabase)
+        udEntries = fetched  // null = no-hit
+      }
+
       const explained = await explainWithContext(
         phrase, nativeLang, targetLang, env.ANTHROPIC_API_KEY,
-        { sourceComment: src?.text ?? null, relatedComments, styleExamples, metadata }
+        { sourceComment: src?.text ?? null, relatedComments, styleExamples, metadata, udEntries }
       )
       if (!explained) return null
       return {
@@ -64,7 +80,7 @@ export async function handlePhrasesBatch(request, env, userId, supabase) {
     return jsonResponse({ ok: true, phrases: [] })
   }
 
-  // ── Upsert to server-side phrase_cache (core fields only) ────────────────
+  // ── Upsert to phrase_cache ────────────────────────────────────────────────
   const rows = phrases.map(p => ({
     cache_key:   `${nativeLang}-${targetLang}::${p.phrase.toLowerCase().trim()}`,
     phrase:      p.phrase,
@@ -84,7 +100,107 @@ export async function handlePhrasesBatch(request, env, userId, supabase) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// Agent 1 — Phrase name extractor  (returns string[])
+// Dictionary cache — Supabase backed
+// ══════════════════════════════════════════════════════════════════
+const DICT_NO_HIT_TTL_MS  = 1  * 24 * 60 * 60 * 1000   // 1 day
+const DICT_HIT_REFRESH_MS = 90 * 24 * 60 * 60 * 1000   // 3 months
+
+/**
+ * Look up current dict state for a (term, source) pair.
+ * Returns { shouldFetch, entries, termId }
+ *   - shouldFetch: true  → caller must call the external API
+ *   - entries:     array of dict_entries rows (only when shouldFetch=false and hit=true)
+ *   - termId:      uuid for subsequent persistDictEntries call
+ */
+async function resolveDictEntries(term, source, supabase) {
+  const normTerm = term.toLowerCase().trim()
+
+  // Ensure term exists (upsert is idempotent)
+  const { data: termRow, error: termErr } = await supabase
+    .from('dict_terms')
+    .upsert({ term: normTerm, lang: 'en' }, { onConflict: 'term,lang' })
+    .select('id')
+    .single()
+
+  if (termErr || !termRow) return { shouldFetch: true, entries: null, termId: null }
+
+  const termId = termRow.id
+
+  // Fetch current entries for this source
+  const { data: rows } = await supabase
+    .from('dict_entries')
+    .select('*')
+    .eq('term_id', termId)
+    .eq('source', source)
+    .eq('is_current', true)
+    .order('score', { ascending: false })
+
+  if (!rows || rows.length === 0) {
+    // Never searched before
+    return { shouldFetch: true, entries: null, termId }
+  }
+
+  const age = Date.now() - new Date(rows[0].searched_at).getTime()
+
+  if (!rows[0].hit) {
+    // Recorded no-hit: only retry after 1 day
+    return { shouldFetch: age >= DICT_NO_HIT_TTL_MS, entries: null, termId }
+  }
+
+  // Has data: mandatory re-fetch after 3 months
+  return { shouldFetch: age >= DICT_HIT_REFRESH_MS, entries: rows, termId }
+}
+
+/**
+ * Persist fetch results (or a no-hit) into dict_entries.
+ * Marks old is_current rows as superseded; keeps them as version history.
+ */
+async function persistDictEntries(termId, source, fetchedEntries, supabase) {
+  // Determine next version number
+  const { data: cur } = await supabase
+    .from('dict_entries')
+    .select('version')
+    .eq('term_id', termId)
+    .eq('source', source)
+    .eq('is_current', true)
+    .order('version', { ascending: false })
+    .limit(1)
+
+  const nextVersion = (cur?.[0]?.version ?? 0) + 1
+
+  // Supersede old current entries
+  await supabase
+    .from('dict_entries')
+    .update({ is_current: false })
+    .eq('term_id', termId)
+    .eq('source', source)
+    .eq('is_current', true)
+
+  if (!fetchedEntries || fetchedEntries.length === 0) {
+    // Explicit no-hit record
+    await supabase.from('dict_entries').insert({
+      term_id: termId, source, hit: false, version: nextVersion
+    })
+  } else {
+    await supabase.from('dict_entries').insert(
+      fetchedEntries.map(e => ({
+        term_id:    termId,
+        source,
+        source_ref: e.source_ref ?? null,
+        hit:        true,
+        version:    nextVersion,
+        definition: e.definition,
+        example:    e.example ?? null,
+        tags:       e.tags ?? null,
+        score:      e.score ?? null,
+        score_down: e.score_down ?? null
+      }))
+    )
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// Stage 1 — Phrase name extractor (returns string[])
 // ══════════════════════════════════════════════════════════════════
 async function extractPhraseNames(commentTexts, targetLang, apiKey) {
   const targetName = LANG_NAMES[targetLang] ?? targetLang
@@ -119,19 +235,12 @@ ${commentTexts.join('\n')}`
 // ══════════════════════════════════════════════════════════════════
 // Source comment reverse-lookup (Worker code — no LLM)
 // ══════════════════════════════════════════════════════════════════
-/**
- * Find the best matching comment for a phrase entirely in Worker code.
- * 1. Exact substring match (case-insensitive) → first match wins.
- * 2. Word-overlap similarity for hallucinated/variant phrases.
- */
 function findSourceComment(phrase, commentObjects) {
   const phraseLower = phrase.toLowerCase()
 
-  // 1. Exact substring match
   const exact = commentObjects.find(c => c.text.toLowerCase().includes(phraseLower))
   if (exact) return exact
 
-  // 2. Word-overlap fallback (handles LLM slightly changing the phrase)
   const phraseWords = phraseLower.split(/\W+/).filter(w => w.length > 1)
   if (phraseWords.length === 0) return null
 
@@ -145,61 +254,68 @@ function findSourceComment(phrase, commentObjects) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// RAG — Urban Dictionary lookup
+// Urban Dictionary API fetch — returns top 3 entries or null
 // ══════════════════════════════════════════════════════════════════
 async function fetchUrbanDictionary(term) {
   try {
     const url = `https://api.urbandictionary.com/v0/define?term=${encodeURIComponent(term)}`
     const res  = await fetch(url, {
       headers: { 'User-Agent': 'TwitchLaunguage-LanguageLearning/1.0' },
-      // Cloudflare Worker fetch has no built-in timeout; use AbortController
-      signal: AbortSignal.timeout(4000)
+      signal:  AbortSignal.timeout(4000)
     })
     if (!res.ok) return null
 
     const data = await res.json()
     if (!Array.isArray(data.list) || data.list.length === 0) return null
 
-    // Pick the most upvoted definition
-    const best = [...data.list].sort((a, b) => b.thumbs_up - a.thumbs_up)[0]
-
-    return {
-      definition: best.definition.replace(/\[|\]/g, '').trim(),
-      example:    best.example.replace(/\[|\]/g, '').trim(),
-      thumbs_up:  best.thumbs_up,
-      thumbs_down: best.thumbs_down
-    }
+    return data.list
+      .sort((a, b) => b.thumbs_up - a.thumbs_up)
+      .slice(0, 3)
+      .map(d => ({
+        source_ref: String(d.defid),
+        definition: d.definition.replace(/\[|\]/g, '').trim(),
+        example:    d.example.replace(/\[|\]/g, '').trim() || null,
+        score:      d.thumbs_up,
+        score_down: d.thumbs_down,
+        tags:       null
+      }))
   } catch {
-    return null   // timeout or network error — proceed without context
+    return null
   }
 }
 
 // ══════════════════════════════════════════════════════════════════
-// Agent 2 — Grounded explainer
+// Stage 2 — Grounded explainer
 // ══════════════════════════════════════════════════════════════════
 async function explainWithContext(phrase, nativeLang, targetLang, apiKey, context = {}) {
-  const { sourceComment = null, relatedComments = [], styleExamples = [], metadata = {} } = context
-
-  // Fetch UD context while keeping the function async-parallel-friendly
-  const ud = await fetchUrbanDictionary(phrase)
+  const {
+    sourceComment  = null,
+    relatedComments = [],
+    styleExamples  = [],
+    metadata       = {},
+    udEntries      = null   // dict_entries rows or null
+  } = context
 
   const langName   = LANG_NAMES[nativeLang]  ?? nativeLang
   const targetName = LANG_NAMES[targetLang]  ?? targetLang
 
-  const udBlock = ud
-    ? `[Urban Dictionary — community definition, ${ud.thumbs_up} upvotes / ${ud.thumbs_down} downvotes]
-Definition : ${ud.definition}
-Example    : ${ud.example || '(none provided)'}`
-    : `[Urban Dictionary — no entry found]
-This term may be very new slang, a niche Twitch/gaming meme, or a specific streamer's expression.`
+  // Build UD context block from cached/fetched entries
+  let udBlock
+  if (udEntries && udEntries.length > 0) {
+    const lines = udEntries.map((e, i) =>
+      `[${i + 1}] ${e.definition}${e.example ? `\n    Example: ${e.example}` : ''} (👍${e.score ?? '?'})`
+    ).join('\n')
+    udBlock = `[Urban Dictionary — ${udEntries.length} definition(s)]\n${lines}`
+  } else {
+    udBlock = `[Urban Dictionary — no entry found]\nThis term may be very new slang, a niche Twitch/gaming meme, or a specific streamer's expression.`
+  }
 
   const pronunciationGuide = {
     ja: 'カタカナ読み (例: copium → コーピアム)',
-    zh: 'ピンイン (例: copium → kōpíyǎm)',
-    ko: 'ハングル読み (例: copium → 코피엄)',
+    zh: 'ピンイン',
+    ko: 'ハングル読み',
   }[nativeLang] ?? 'IPA phonetic notation (e.g. copium → /ˈkoʊpiəm/)'
 
-  // ── Optional context blocks ──────────────────────────────────────
   const streamLines = []
   if (metadata.gameTitle)   streamLines.push(`- Game/Category: ${metadata.gameTitle}`)
   if (metadata.streamTitle) streamLines.push(`- Stream Title: ${metadata.streamTitle}`)
@@ -215,7 +331,7 @@ This term may be very new slang, a niche Twitch/gaming meme, or a specific strea
     : ''
 
   const styleBlock = styleExamples.length > 0
-    ? `CHAT STYLE EXAMPLES (match the register and tone of these when writing the example field — keep it short and natural):\n${styleExamples.map(s => `"${s}"`).join('\n')}\n\n`
+    ? `CHAT STYLE EXAMPLES (match the register and tone of these when writing the example field):\n${styleExamples.map(s => `"${s}"`).join('\n')}\n\n`
     : ''
 
   const prompt = `You are a language learning assistant for Twitch viewers.
@@ -234,10 +350,10 @@ Output ONLY a single valid JSON object, no markdown fences:
 Field rules:
 - pronunciation      : phonetic reading using ${pronunciationGuide}
 - uncertain          : true ONLY if UD has no entry AND usage context does not clearly reveal the meaning; false otherwise
-- translation        : concise ${langName} meaning (1–2 sentences); prioritise ACTUAL USAGE over UD when they differ; write your best inference even if uncertain
-- nuance             : how/when Twitch viewers use it, tone, cultural context (in ${langName}); write your best inference even if uncertain
+- translation        : concise ${langName} meaning (1–2 sentences); prioritise ACTUAL USAGE over UD when they differ
+- nuance             : how/when Twitch viewers use it, tone, cultural context (in ${langName})
 - example            : one short Twitch chat message using the phrase, written ENTIRELY in ${targetName}, IN THE STYLE OF THE CHAT STYLE EXAMPLES — absolutely no ${langName} words
-- example_translation: ${langName} translation of the example sentence only — no commentary, no extra content
+- example_translation: ${langName} translation of the example sentence only — no commentary
 
 IMPORTANT: Never write disclaimers or apologies inside any field. Use the uncertain flag instead.`
 

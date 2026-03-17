@@ -98,6 +98,43 @@ CREATE POLICY "selection_history_read_own" ON public.selection_history
   FOR SELECT USING (auth.uid() = user_id);
 
 -- ============================================================
+-- Dictionary: term master + versioned source entries
+-- (shared data — no RLS; writes via service role only)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS public.dict_terms (
+  id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  term       TEXT NOT NULL,
+  lang       TEXT NOT NULL DEFAULT 'en',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(term, lang)
+);
+
+CREATE INDEX IF NOT EXISTS dict_terms_fts
+  ON public.dict_terms USING gin(to_tsvector('english', term));
+
+CREATE TABLE IF NOT EXISTS public.dict_entries (
+  id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  term_id     UUID NOT NULL REFERENCES public.dict_terms(id) ON DELETE CASCADE,
+  source      TEXT NOT NULL,        -- 'urban_dictionary' | future sources
+  source_ref  TEXT,                 -- external ID (UD: defid), NULL for no-hit rows
+  -- Search result
+  hit         BOOLEAN NOT NULL,     -- false = searched, found nothing
+  is_current  BOOLEAN NOT NULL DEFAULT TRUE,
+  version     INTEGER NOT NULL DEFAULT 1,
+  -- Content (NULL when hit = false)
+  definition  TEXT,
+  example     TEXT,
+  tags        TEXT[],
+  score       REAL,                 -- UD: thumbs_up
+  score_down  REAL,                 -- UD: thumbs_down
+  searched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS dict_entries_lookup
+  ON public.dict_entries(term_id, source, is_current);
+
+-- ============================================================
 -- Functions
 -- ============================================================
 
