@@ -154,7 +154,6 @@ function setupBuyButtons(jwt) {
 // ──────────────────────────────────────────────
 function applySettings(settings) {
   if (settings.nativeLang)  document.getElementById('sel-native').value   = settings.nativeLang
-  if (settings.targetLang)  document.getElementById('sel-target').value   = settings.targetLang
   if (settings.intervalSec) document.getElementById('sel-interval').value = String(settings.intervalSec)
   document.getElementById('toggle-enabled').checked = settings.enabled !== false
 }
@@ -181,7 +180,6 @@ function setupSaveButton() {
   document.getElementById('btn-save').addEventListener('click', async () => {
     const settings = {
       nativeLang:  document.getElementById('sel-native').value,
-      targetLang:  document.getElementById('sel-target').value,
       intervalSec: parseInt(document.getElementById('sel-interval').value, 10),
       enabled:     document.getElementById('toggle-enabled').checked
     }

@@ -95,12 +95,12 @@ export async function clearCache() {
 // ──────────────────────────────────────────────
 // Helpers
 // ──────────────────────────────────────────────
-export function buildKey(phrase, nativeLang, targetLang) {
+export function buildKey(phrase, nativeLang) {
   // Accept either a full phrase object or separate args
   if (typeof phrase === 'object') {
-    return `${phrase.native_lang ?? 'ja'}-${phrase.target_lang ?? 'en'}::${phrase.phrase.toLowerCase().trim()}`
+    return `${phrase.native_lang ?? 'ja'}::${phrase.phrase.toLowerCase().trim()}`
   }
-  return `${nativeLang}-${targetLang}::${phrase.toLowerCase().trim()}`
+  return `${nativeLang}::${phrase.toLowerCase().trim()}`
 }
 
 async function evictIfNeeded(cache, counts) {

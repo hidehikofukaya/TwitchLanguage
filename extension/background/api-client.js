@@ -88,9 +88,9 @@ export async function deleteAccount() {
  * Send a batch of Twitch comments to generate phrase explanations.
  * Returns { ok: true, phrases: PhraseExplanation[] }
  */
-export async function fetchPhrases(comments, nativeLang, targetLang, metadata = {}) {
+export async function fetchPhrases(comments, nativeLang, metadata = {}) {
   return apiFetch('/phrases/batch', {
     method: 'POST',
-    body: JSON.stringify({ comments, nativeLang, targetLang, metadata })
+    body: JSON.stringify({ comments, nativeLang, metadata })
   })
 }

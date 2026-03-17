@@ -148,8 +148,7 @@ async function onPrefetchTick() {
 
     const result = await fetchPhrases(
       commentsToSend,
-      settings.nativeLang  ?? 'ja',
-      settings.targetLang  ?? 'en',
+      settings.nativeLang ?? 'ja',
       currentMetadata
     )
 

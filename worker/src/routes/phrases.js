@@ -1,10 +1,10 @@
 /**
  * POST /phrases/batch
- * Body: { comments: string[], nativeLang: string, targetLang: string, metadata: {} }
+ * Body: { comments: string[], nativeLang: string, metadata: {} }
  * Returns: { phrases: PhraseExplanation[] }
  *
  * Two-stage pipeline:
- *   Stage 1 — Extract phrase names from chat comments (Haiku, lightweight)
+ *   Stage 1 — Extract phrase names from chat (language auto-detected by LLM)
  *   Stage 2 — Dict cache lookup → optional UD fetch → grounded explanation (Haiku × N, parallel)
  *
  * Dictionary cache rules (dict_terms + dict_entries in Supabase):
@@ -16,7 +16,7 @@
  */
 export async function handlePhrasesBatch(request, env, userId, supabase) {
   const body = await request.json()
-  const { comments, nativeLang = 'ja', targetLang = 'en', metadata = {} } = body
+  const { comments, nativeLang = 'ja', metadata = {} } = body
 
   if (!Array.isArray(comments) || comments.length === 0) {
     return jsonResponse({ ok: false, error: 'comments required' }, 400)
@@ -28,8 +28,8 @@ export async function handlePhrasesBatch(request, env, userId, supabase) {
   )
   const commentTexts = commentObjects.map(c => c.text)
 
-  // ── Stage 1: Extract candidate phrase names ──────────────────────────────
-  const phraseNames = await extractPhraseNames(commentTexts, targetLang, env.ANTHROPIC_API_KEY)
+  // ── Stage 1: Extract candidate phrase names (language auto-detected) ────
+  const phraseNames = await extractPhraseNames(commentTexts, nativeLang, env.ANTHROPIC_API_KEY)
   if (!phraseNames || phraseNames.length === 0) {
     return jsonResponse({ ok: true, phrases: [] })
   }
@@ -62,7 +62,7 @@ export async function handlePhrasesBatch(request, env, userId, supabase) {
       }
 
       const explained = await explainWithContext(
-        phrase, nativeLang, targetLang, env.ANTHROPIC_API_KEY,
+        phrase, nativeLang, env.ANTHROPIC_API_KEY,
         { sourceComment: src?.text ?? null, relatedComments, styleExamples, metadata, udEntries }
       )
       if (!explained) return null
@@ -82,10 +82,10 @@ export async function handlePhrasesBatch(request, env, userId, supabase) {
 
   // ── Upsert to phrase_cache ────────────────────────────────────────────────
   const rows = phrases.map(p => ({
-    cache_key:   `${nativeLang}-${targetLang}::${p.phrase.toLowerCase().trim()}`,
+    cache_key:   `${nativeLang}::${p.phrase.toLowerCase().trim()}`,
     phrase:      p.phrase,
     native_lang: nativeLang,
-    target_lang: targetLang,
+    target_lang: 'auto',
     translation: p.translation,
     nuance:      p.nuance,
     example:     p.example,
@@ -202,17 +202,18 @@ async function persistDictEntries(termId, source, fetchedEntries, supabase) {
 // ══════════════════════════════════════════════════════════════════
 // Stage 1 — Phrase name extractor (returns string[])
 // ══════════════════════════════════════════════════════════════════
-async function extractPhraseNames(commentTexts, targetLang, apiKey) {
-  const targetName = LANG_NAMES[targetLang] ?? targetLang
+async function extractPhraseNames(commentTexts, nativeLang, apiKey) {
+  const nativeName = LANG_NAMES[nativeLang] ?? nativeLang
 
-  const prompt = `From the Twitch chat comments below, extract up to 5 ${targetName} slang terms, idioms, or notable phrases worth learning.
+  const prompt = `From the Twitch chat comments below, extract up to 5 slang terms, idioms, or notable phrases worth learning.
 Output ONLY a JSON array of strings — no markdown, no explanation.
 
 Extraction rules:
+- Detect the dominant language of the chat automatically — pick phrases from that language
 - Single words or short multi-word expressions only (NOT full sentences)
 - Skip words 3 characters or shorter (ok, no, gg, wp, lol) unless culturally significant Twitch slang
 - Skip pure numbers, URLs, and @mentions
-- Prefer internet slang, gaming terms, memes, and expressions a ${targetName} learner would find unfamiliar
+- Prefer internet slang, gaming terms, memes, and expressions that a ${nativeName} speaker learning through immersion would find educational or unfamiliar
 
 Example output: ["copium","no cap","he's cooked","brain rot"]
 
@@ -287,17 +288,16 @@ async function fetchUrbanDictionary(term) {
 // ══════════════════════════════════════════════════════════════════
 // Stage 2 — Grounded explainer
 // ══════════════════════════════════════════════════════════════════
-async function explainWithContext(phrase, nativeLang, targetLang, apiKey, context = {}) {
+async function explainWithContext(phrase, nativeLang, apiKey, context = {}) {
   const {
-    sourceComment  = null,
+    sourceComment   = null,
     relatedComments = [],
-    styleExamples  = [],
-    metadata       = {},
-    udEntries      = null   // dict_entries rows or null
+    styleExamples   = [],
+    metadata        = {},
+    udEntries       = null   // dict_entries rows or null
   } = context
 
-  const langName   = LANG_NAMES[nativeLang]  ?? nativeLang
-  const targetName = LANG_NAMES[targetLang]  ?? targetLang
+  const langName = LANG_NAMES[nativeLang] ?? nativeLang
 
   // Build UD context block from cached/fetched entries
   let udBlock
@@ -335,7 +335,7 @@ async function explainWithContext(phrase, nativeLang, targetLang, apiKey, contex
     : ''
 
   const prompt = `You are a language learning assistant for Twitch viewers.
-The learner's native language is ${langName}. They are learning ${targetName} through Twitch chat.
+The learner's native language is ${langName}. They learn languages through Twitch chat immersion.
 
 ${streamBlock}PHRASE TO EXPLAIN: "${phrase}"
 
@@ -348,11 +348,11 @@ Output ONLY a single valid JSON object, no markdown fences:
 {"phrase":"${phrase}","pronunciation":"...","uncertain":false,"translation":"...","nuance":"...","example":"...","example_translation":"..."}
 
 Field rules:
-- pronunciation      : phonetic reading using ${pronunciationGuide}
+- pronunciation      : phonetic reading of the phrase using ${pronunciationGuide}
 - uncertain          : true ONLY if UD has no entry AND usage context does not clearly reveal the meaning; false otherwise
 - translation        : concise ${langName} meaning (1–2 sentences); prioritise ACTUAL USAGE over UD when they differ
-- nuance             : how/when Twitch viewers use it, tone, cultural context (in ${langName})
-- example            : one short Twitch chat message using the phrase, written ENTIRELY in ${targetName}, IN THE STYLE OF THE CHAT STYLE EXAMPLES — absolutely no ${langName} words
+- nuance             : how/when this phrase is used, tone, cultural context (write in ${langName})
+- example            : one short Twitch chat message using the phrase, written ENTIRELY in the same language as the phrase — absolutely no ${langName} words, IN THE STYLE OF THE CHAT STYLE EXAMPLES
 - example_translation: ${langName} translation of the example sentence only — no commentary
 
 IMPORTANT: Never write disclaimers or apologies inside any field. Use the uncertain flag instead.`
