@@ -13,7 +13,8 @@ export async function handleStripeWebhook(request, env, supabase) {
   // Verify Stripe signature
   let event
   try {
-    event = await verifyStripeSignature(body, sig, env.STRIPE_WEBHOOK_SECRET)
+    await verifyStripeSignature(body, sig, env.STRIPE_WEBHOOK_SECRET)
+    event = JSON.parse(body)
   } catch (err) {
     return new Response(`Webhook signature invalid: ${err.message}`, { status: 400 })
   }
@@ -24,15 +25,15 @@ export async function handleStripeWebhook(request, env, supabase) {
 
   const session = event.data.object
 
-  // client_reference_id is encoded as "userId|coinAmount"
-  const clientRef = session.client_reference_id ?? ''
-  const pipeIdx   = clientRef.lastIndexOf('|')
-  const userId    = pipeIdx > 0 ? clientRef.slice(0, pipeIdx) : null
-  const coinAmount = pipeIdx > 0 ? parseInt(clientRef.slice(pipeIdx + 1), 10) : 0
+  // client_reference_id contains userId (possibly "userId|coins" for legacy compat)
+  // coin_amount is pre-configured per Payment Link in Stripe dashboard metadata
+  const clientRef  = session.client_reference_id ?? ''
+  const userId     = clientRef.includes('|') ? clientRef.split('|')[0] : (clientRef || null)
+  const coinAmount = parseInt(session.metadata?.coin_amount ?? '0', 10)
 
   if (!userId || !coinAmount || coinAmount <= 0) {
-    console.error('webhook: missing client_reference_id', { clientRef })
-    return new Response('missing client_reference_id', { status: 400 })
+    console.error('webhook: missing user or coin data', { clientRef, metadata: session.metadata })
+    return new Response('missing user or coin data', { status: 400 })
   }
 
   const { error } = await supabase.rpc('add_coins', {
