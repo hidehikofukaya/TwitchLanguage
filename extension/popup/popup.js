@@ -141,7 +141,7 @@ function setupBuyButtons(jwt) {
   ;[30, 100, 1000].forEach(coins => {
     const btn = document.getElementById(`buy-${coins}`)
     if (!btn) return
-    const url = `${PAYMENT_LINKS[coins]}?client_reference_id=${encodeURIComponent(userId + '|' + coins)}`
+    const url = `${PAYMENT_LINKS[coins]}?client_reference_id=${encodeURIComponent(userId)}`
     btn.addEventListener('click', e => {
       e.preventDefault()
       chrome.tabs.create({ url })
