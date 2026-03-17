@@ -105,13 +105,14 @@ async function onPrefetchTick() {
   const settings = await getSettings()
   if (settings.enabled === false) return
 
-  // Respect max LLM call frequency
+  // Respect max LLM call frequency — set timestamp immediately to prevent race condition
   const { lastLlmCall = 0 } = await chrome.storage.local.get('lastLlmCall')
   const elapsed = (Date.now() - lastLlmCall) / 1000
   if (elapsed < MAX_LLM_INTERVAL_SEC) {
     swLog('info', `prefetch skip: cooldown ${Math.round(elapsed)}/${MAX_LLM_INTERVAL_SEC}s`)
     return
   }
+  await chrome.storage.local.set({ lastLlmCall: Date.now() })
 
   const { currentChannel = '', currentMetadata = {} } = await chrome.storage.local.get(['currentChannel', 'currentMetadata'])
   const currentComments = await getCurrentComments()
@@ -144,8 +145,6 @@ async function onPrefetchTick() {
   notifyContentScript({ type: 'CACHE_STATUS', status: 'fetching' })
 
   try {
-    await chrome.storage.local.set({ lastLlmCall: Date.now() })
-
     const result = await fetchPhrases(
       commentsToSend,
       settings.nativeLang ?? 'ja',

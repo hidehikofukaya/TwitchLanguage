@@ -206,24 +206,28 @@ async function persistDictEntries(termId, source, fetchedEntries, supabase) {
 // Stage 1 — Phrase name extractor (returns string[])
 // ══════════════════════════════════════════════════════════════════
 async function extractPhraseNames(commentTexts, nativeLang, apiKey, streamLang = null) {
-  const nativeName   = LANG_NAMES[nativeLang]   ?? nativeLang
-  const streamName   = LANG_NAMES[streamLang]   ?? streamLang
+  const streamName = LANG_NAMES[streamLang] ?? streamLang
   const langDirective = streamLang
-    ? `The stream language is ${streamName} (${streamLang}). Extract ONLY ${streamName} phrases from the comments.`
+    ? `The chat is in ${streamName}. Extract ONLY ${streamName} phrases.`
     : `Detect the dominant language of the comments and extract phrases from that language only.`
 
-  const prompt = `You are extracting phrases from Twitch chat for a language learner whose native language is ${nativeName}.
+  const prompt = `You are extracting notable phrases from Twitch chat.
 ${langDirective}
 
 Output ONLY a JSON array of strings — no markdown, no explanation.
 If no suitable phrases are found in the comments, output an empty array: []
 
+Target phrases (pick up to 5):
+- Gaming/streaming jargon and in-community terminology
+- Internet slang, memes, neologisms, and buzzwords
+- Expressions that are subculture-specific or have non-obvious meaning
+- Emotionally charged or frequently repeated reactions with cultural significance
+
 Extraction rules:
-- CRITICAL: Only extract phrases that ACTUALLY APPEAR verbatim (or near-verbatim) in the comments below. Do NOT invent or hallucinate phrases.
+- CRITICAL: Only extract phrases that ACTUALLY APPEAR verbatim (or near-verbatim) in the comments. Do NOT invent phrases.
 - Single words or short multi-word expressions only (NOT full sentences)
-- Skip words 3 characters or shorter unless they are culturally significant Twitch/gaming slang
+- Skip generic short filler words unless they carry strong cultural meaning in this community
 - Skip pure numbers, URLs, and @mentions
-- Prefer slang, internet expressions, gaming terms, and memes that would be educational for an immersion learner
 
 Twitch chat comments:
 ${commentTexts.join('\n')}`
