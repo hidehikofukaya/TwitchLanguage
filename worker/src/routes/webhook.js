@@ -23,11 +23,16 @@ export async function handleStripeWebhook(request, env, supabase) {
   }
 
   const session = event.data.object
-  const userId = session.metadata?.user_id
-  const coinAmount = parseInt(session.metadata?.coin_amount ?? '0', 10)
 
-  if (!userId || coinAmount <= 0) {
-    return new Response('missing metadata', { status: 400 })
+  // client_reference_id is encoded as "userId|coinAmount"
+  const clientRef = session.client_reference_id ?? ''
+  const pipeIdx   = clientRef.lastIndexOf('|')
+  const userId    = pipeIdx > 0 ? clientRef.slice(0, pipeIdx) : null
+  const coinAmount = pipeIdx > 0 ? parseInt(clientRef.slice(pipeIdx + 1), 10) : 0
+
+  if (!userId || !coinAmount || coinAmount <= 0) {
+    console.error('webhook: missing client_reference_id', { clientRef })
+    return new Response('missing client_reference_id', { status: 400 })
   }
 
   const { error } = await supabase.rpc('add_coins', {
