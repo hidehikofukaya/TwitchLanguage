@@ -1,0 +1,55 @@
+{
+  "manifest_version": 3,
+  "name": "TwitchLaunguage",
+  "version": "0.1.0",
+  "description": "Learn languages naturally through Twitch chat phrases",
+
+  "permissions": [
+    "storage",
+    "identity",
+    "alarms",
+    "tabs"
+  ],
+
+  "host_permissions": [
+    "https://www.twitch.tv/*",
+    "https://opbilttrjwowvqpbvctv.supabase.co/*",
+    "https://twitchlaunguage-api.hide2dev.workers.dev/*"
+  ],
+
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["https://www.twitch.tv/*"],
+      "js": ["content/content.js"],
+      "css": ["content/overlay.css"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/*"],
+      "matches": ["https://www.twitch.tv/*"]
+    }
+  ]
+}

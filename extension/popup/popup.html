@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TwitchLaunguage</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+
+    <!-- Header -->
+    <header>
+      <span class="logo">TwitchLaunguage</span>
+      <div class="header-right">
+        <span id="status-badge" class="badge badge-off">OFF</span>
+        <!-- Account menu (visible when logged in) -->
+        <div id="account-menu-wrap" class="account-menu-wrap hidden">
+          <button id="btn-account" class="btn-account" title="アカウントメニュー">
+            <span id="account-name">--</span> ▾
+          </button>
+          <div id="account-dropdown" class="account-dropdown hidden">
+            <button id="btn-logout" class="dropdown-item dropdown-item-danger">ログアウト</button>
+            <div class="dropdown-divider"></div>
+            <button id="btn-delete-account" class="dropdown-item dropdown-item-delete">アカウントを削除</button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Not logged in -->
+    <section id="section-auth" class="hidden">
+      <p class="desc">語学学習を始めるには登録してください。<br>登録後にコイン<strong>10枚</strong>をプレゼント！</p>
+      <button id="btn-register" class="btn btn-primary">Googleで登録</button>
+    </section>
+
+    <!-- Logged in -->
+    <section id="section-main" class="hidden">
+
+      <!-- Enabled toggle (instant) -->
+      <div class="toggle-instant-row">
+        <span>フレーズ表示</span>
+        <label class="switch">
+          <input type="checkbox" id="toggle-enabled" checked>
+          <span class="switch-track"></span>
+        </label>
+      </div>
+
+      <!-- Re-show overlay -->
+      <button id="btn-show-overlay" class="btn btn-secondary btn-full">オーバーレイを表示</button>
+
+      <!-- Coin balance -->
+      <div class="coin-row">
+        <span class="coin-label">🪙 コイン残量</span>
+        <span id="coin-balance" class="coin-value">--</span>
+      </div>
+
+      <!-- Buy coins -->
+      <div class="buy-section">
+        <p class="buy-label">コインを追加</p>
+        <div class="buy-grid">
+          <a id="buy-30"   class="btn btn-buy" href="#">30枚<br><small>$1.99</small></a>
+          <a id="buy-100"  class="btn btn-buy" href="#">100枚<br><small>$4.99</small></a>
+          <a id="buy-1000" class="btn btn-buy" href="#">1000枚<br><small>$9.99</small></a>
+        </div>
+      </div>
+
+      <hr>
+
+      <!-- Settings -->
+      <div class="settings">
+        <label class="setting-row">
+          <span>母国語</span>
+          <select id="sel-native">
+            <option value="ja">日本語</option>
+            <option value="en">English</option>
+            <option value="zh">中文</option>
+            <option value="ko">한국어</option>
+            <option value="es">Español</option>
+            <option value="fr">Français</option>
+            <option value="de">Deutsch</option>
+          </select>
+        </label>
+
+        <label class="setting-row">
+          <span>学習言語</span>
+          <select id="sel-target">
+            <option value="en">English</option>
+            <option value="ja">日本語</option>
+            <option value="zh">中文</option>
+            <option value="ko">한국어</option>
+            <option value="es">Español</option>
+            <option value="fr">Français</option>
+            <option value="de">Deutsch</option>
+          </select>
+        </label>
+
+        <label class="setting-row">
+          <span>表示間隔</span>
+          <select id="sel-interval">
+            <option value="30">30秒</option>
+            <option value="60" selected>60秒</option>
+            <option value="120">2分</option>
+            <option value="300">5分</option>
+          </select>
+        </label>
+      </div>
+
+      <button id="btn-save" class="btn btn-primary btn-full">設定を保存</button>
+    </section>
+
+    <!-- Loading -->
+    <section id="section-loading">
+      <div class="spinner"></div>
+    </section>
+
+    <!-- Debug panel (toggle with footer link) -->
+    <section id="section-debug" class="hidden">
+      <div class="debug-toolbar">
+        <button class="dbg-btn" id="dbg-storage">Storage</button>
+        <button class="dbg-btn" id="dbg-balance">Balance</button>
+        <button class="dbg-btn" id="dbg-register">Register</button>
+        <button class="dbg-btn" id="dbg-refresh">Refresh</button>
+        <button class="dbg-btn" id="dbg-delete">Delete</button>
+        <button class="dbg-btn" id="dbg-oauth">OAuth URL</button>
+        <button class="dbg-btn dbg-danger" id="dbg-coins">Coins×999</button>
+        <button class="dbg-btn" id="dbg-alarms">Alarms?</button>
+        <button class="dbg-btn dbg-danger" id="dbg-force-display">Force Display</button>
+        <button class="dbg-btn" id="dbg-reschedule">Reschedule</button>
+        <button class="dbg-btn dbg-clear" id="dbg-clear">CLR</button>
+      </div>
+      <pre id="debug-output" class="debug-output"></pre>
+    </section>
+
+    <footer class="popup-footer">
+      <button id="btn-debug-toggle" class="footer-link">debug</button>
+    </footer>
+
+  </div>
+  <script src="popup.js" type="module"></script>
+</body>
+</html>
