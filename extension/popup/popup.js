@@ -214,6 +214,14 @@ async function setupDebugPanel() {
     if (!sec.classList.contains('hidden')) runDbgStorage()
   })
 
+  document.getElementById('dbg-copy').addEventListener('click', async () => {
+    const text = document.getElementById('debug-output').textContent
+    await navigator.clipboard.writeText(text)
+    const btn = document.getElementById('dbg-copy')
+    btn.textContent = 'COPIED!'
+    setTimeout(() => { btn.textContent = 'COPY' }, 1500)
+  })
+
   document.getElementById('dbg-clear').addEventListener('click', () => {
     document.getElementById('debug-output').textContent = ''
   })

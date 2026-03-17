@@ -34,7 +34,7 @@ export async function handlePhrasesBatch(request, env, userId, supabase) {
     commentTexts, nativeLang, env.ANTHROPIC_API_KEY, metadata.streamLang ?? null
   )
   if (!phraseNames || phraseNames.length === 0) {
-    return jsonResponse({ ok: true, phrases: [] })
+    return jsonResponse({ ok: true, phrases: [], _debug: { stage1: [], stage2: [] } })
   }
 
   // Style examples: evenly-spaced sample of 7 comments representing chat register
@@ -44,6 +44,8 @@ export async function handlePhrasesBatch(request, env, userId, supabase) {
     .map(c => c.text)
 
   // ── Stage 2: Dict lookup → optional UD fetch → explain (all in parallel) ─
+  const stage2Debug = []
+
   const results = await Promise.all(
     phraseNames.map(async phrase => {
       const src = findSourceComment(phrase, commentObjects)
@@ -64,10 +66,25 @@ export async function handlePhrasesBatch(request, env, userId, supabase) {
         udEntries = fetched  // null = no-hit
       }
 
-      const explained = await explainWithContext(
-        phrase, nativeLang, env.ANTHROPIC_API_KEY,
-        { sourceComment: src?.text ?? null, relatedComments, styleExamples, metadata, udEntries }
-      )
+      let explained = null
+      let explainError = null
+      try {
+        explained = await explainWithContext(
+          phrase, nativeLang, env.ANTHROPIC_API_KEY,
+          { sourceComment: src?.text ?? null, relatedComments, styleExamples, metadata, udEntries }
+        )
+      } catch (e) {
+        explainError = e.message
+      }
+
+      stage2Debug.push({
+        phrase,
+        ud_cached: !shouldFetch,
+        ud_hit:    udEntries != null && udEntries.length > 0,
+        explained: !!explained,
+        error:     explainError ?? undefined
+      })
+
       if (!explained) return null
       return {
         ...explained,
@@ -80,7 +97,7 @@ export async function handlePhrasesBatch(request, env, userId, supabase) {
   const phrases = results.filter(Boolean)
 
   if (phrases.length === 0) {
-    return jsonResponse({ ok: true, phrases: [] })
+    return jsonResponse({ ok: true, phrases: [], _debug: { stage1: phraseNames, stage2: stage2Debug } })
   }
 
   // ── Upsert to phrase_cache ────────────────────────────────────────────────
@@ -99,7 +116,7 @@ export async function handlePhrasesBatch(request, env, userId, supabase) {
     .from('phrase_cache')
     .upsert(rows, { onConflict: 'cache_key', ignoreDuplicates: false })
 
-  return jsonResponse({ ok: true, phrases })
+  return jsonResponse({ ok: true, phrases, _debug: { stage1: phraseNames, stage2: stage2Debug } })
 }
 
 // ══════════════════════════════════════════════════════════════════

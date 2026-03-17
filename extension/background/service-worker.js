@@ -151,7 +151,17 @@ async function onPrefetchTick() {
       currentMetadata
     )
 
-    swLog('info', 'phrases fetched', { count: result.phrases?.length ?? 0 })
+    // ── LLM debug logging ────────────────────────────────────────
+    const dbg = result._debug ?? {}
+    swLog('info', `LLM stage1: [${(dbg.stage1 ?? []).join(', ') || '(empty)'}]`)
+    if (dbg.stage2?.length > 0) {
+      dbg.stage2.forEach(s =>
+        swLog('info', `LLM stage2: "${s.phrase}" ud=${s.ud_hit ? 'hit' : 'miss'} llm=${s.explained ? 'ok' : 'FAILED'}`)
+      )
+    }
+    if (!result.ok) swLog('error', 'phrases API error', result.error)
+    swLog('info', `phrases fetched: ${result.phrases?.length ?? 0}件`)
+    // ─────────────────────────────────────────────────────────────
 
     if (result.ok && result.phrases?.length > 0) {
       await storePhrases(result.phrases)
@@ -159,7 +169,7 @@ async function onPrefetchTick() {
 
     notifyContentScript({ type: 'CACHE_STATUS', status: 'ready' })
   } catch (err) {
-    swLog('error', 'prefetch failed', err.message)
+    swLog('error', `prefetch failed: ${err.message}`)
     console.error('[TL] prefetch error:', err)
     notifyContentScript({ type: 'CACHE_STATUS', status: 'error' })
   }
@@ -179,7 +189,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 })
 
 async function handleMessage(msg, sender) {
-  swLog('info', `MSG: ${msg.type}`)
+  if (msg.type !== 'UPDATE_COMMENTS') swLog('info', `MSG: ${msg.type}`)
   switch (msg.type) {
     case 'NEXT_PHRASE':
       await onDisplayTick()

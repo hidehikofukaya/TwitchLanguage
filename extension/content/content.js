@@ -33,7 +33,6 @@ function startObserver(onCommentsReady) {
 
     flushTimer = setInterval(() => {
       if (!isContextValid()) { stopObserver(); return }
-      tlLog('info', `flush tick: buffer=${commentBuffer.length}`)
       if (commentBuffer.length > 0) {
         onCommentsReady([...commentBuffer])
       }
@@ -643,7 +642,6 @@ function boot() {
     try {
       const channel = location.pathname.split('/')[1]?.toLowerCase().replace(/[^a-z0-9_]/g, '') ?? ''
       const metadata = getStreamMetadata(comments)
-      tlLog('info', 'comments updated', { count: comments.length, channel, ...metadata })
       chrome.runtime.sendMessage({ type: 'UPDATE_COMMENTS', comments, channel, metadata })
     } catch {}
   })
