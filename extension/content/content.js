@@ -487,8 +487,95 @@ function getStreamMetadata() {
   return { streamTitle, gameTitle }
 }
 
-let balancePollTimer = null
+// ══════════════════════════════════════════════
+// Supabase Realtime – coin balance push
+// ══════════════════════════════════════════════
+const SUPABASE_REALTIME_URL = 'wss://opbilttrjwowvqpbvctv.supabase.co/realtime/v1/websocket'
+const SUPABASE_ANON_KEY     = 'sb_publishable_pzZ2FVQU2eapMjk0qqWqfA_17HYg3nd'
 
+let realtimeWs             = null
+let realtimeHeartbeatTimer = null
+let realtimeReconnectTimer = null
+
+function startBalanceRealtime(userId, jwt) {
+  closeBalanceRealtime()
+
+  const ws = new WebSocket(
+    `${SUPABASE_REALTIME_URL}?apikey=${SUPABASE_ANON_KEY}&vsn=1.0.0`
+  )
+  realtimeWs = ws
+  let ref = 0
+
+  ws.onopen = () => {
+    tlLog('info', 'Realtime: connected')
+    ws.send(JSON.stringify({
+      topic:    'realtime:coins',
+      event:    'phx_join',
+      payload:  {
+        config: {
+          postgres_changes: [{
+            event:  'UPDATE',
+            schema: 'public',
+            table:  'coin_balances',
+            filter: `user_id=eq.${userId}`
+          }]
+        },
+        access_token: jwt
+      },
+      ref:      String(++ref),
+      join_ref: '1'
+    }))
+    realtimeHeartbeatTimer = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ topic: 'phoenix', event: 'heartbeat', payload: {}, ref: String(++ref) }))
+      }
+    }, 25_000)
+  }
+
+  ws.onmessage = e => {
+    try {
+      const msg = JSON.parse(e.data)
+      if (msg.event === 'postgres_changes') {
+        const balance = msg.payload?.data?.record?.balance
+        if (balance != null) {
+          tlLog('info', 'Realtime: balance pushed', { balance })
+          setBalance(balance)
+        }
+      }
+    } catch {}
+  }
+
+  ws.onclose = () => {
+    closeBalanceRealtime()
+    if (isContextValid()) {
+      tlLog('info', 'Realtime: disconnected – reconnecting in 5s')
+      realtimeReconnectTimer = setTimeout(() => startBalanceRealtime(userId, jwt), 5_000)
+    }
+  }
+
+  ws.onerror = () => ws.close()
+}
+
+function closeBalanceRealtime() {
+  if (realtimeHeartbeatTimer) { clearInterval(realtimeHeartbeatTimer);  realtimeHeartbeatTimer = null }
+  if (realtimeReconnectTimer) { clearTimeout(realtimeReconnectTimer);   realtimeReconnectTimer = null }
+  if (realtimeWs) {
+    realtimeWs.onclose = null  // prevent reconnect loop during teardown
+    realtimeWs.close()
+    realtimeWs = null
+  }
+}
+
+function decodeUserId(jwt) {
+  try {
+    const [, payload] = jwt.split('.')
+    return JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/'))).sub ?? null
+  } catch { return null }
+}
+
+// ══════════════════════════════════════════════
+// Boot / teardown
+// ══════════════════════════════════════════════
 function boot() {
   initUI()
   startObserver(comments => {
@@ -500,22 +587,23 @@ function boot() {
       chrome.runtime.sendMessage({ type: 'UPDATE_COMMENTS', comments, channel, metadata })
     } catch {}
   })
-  const pollBalance = () => {
-    try {
-      chrome.runtime.sendMessage({ type: 'GET_BALANCE' }, res => {
-        if (res?.balance != null) setBalance(res.balance)
-      })
-    } catch {}
-  }
-  pollBalance()
-  balancePollTimer = setInterval(pollBalance, 300_000)
+  // Fetch balance once immediately, then subscribe for push updates
+  try {
+    chrome.runtime.sendMessage({ type: 'GET_BALANCE' }, res => {
+      if (res?.balance != null) setBalance(res.balance)
+    })
+  } catch {}
+  chrome.storage.local.get(['jwt'], ({ jwt }) => {
+    const userId = jwt ? decodeUserId(jwt) : null
+    if (userId) startBalanceRealtime(userId, jwt)
+  })
   tlLog('info', 'boot: observer started')
 }
 
 function teardown() {
   stopObserver()
   destroyUI()
-  if (balancePollTimer) { clearInterval(balancePollTimer); balancePollTimer = null }
+  closeBalanceRealtime()
 }
 
 function onNavigate() {
